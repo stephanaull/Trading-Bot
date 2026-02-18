@@ -151,6 +151,7 @@ async def run_bot(config: BotConfig) -> None:
                 pct_equity=config.pct_equity,
                 fixed_size=config.fixed_size,
                 risk_pct=config.risk_pct,
+                long_only=strat_config.long_only,
             )
 
             # Reconcile — check if broker has existing positions
@@ -296,7 +297,8 @@ def _print_banner(mode: str, account: dict, strategies: dict) -> None:
     print(f"{'='*50}")
     print(f"\n  Strategies ({len(strategies)}):")
     for ticker, strat in strategies.items():
-        print(f"    {ticker}: {strat.file} ({strat.timeframe})")
+        flags = f" [LONG ONLY]" if strat.long_only else ""
+        print(f"    {ticker}: {strat.file} ({strat.timeframe}){flags}")
     print()
 
 

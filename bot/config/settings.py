@@ -20,6 +20,7 @@ class StrategyConfig(BaseModel):
     timeframe: str = "5m"               # Bar timeframe (1m, 2m, 5m, 10m, etc.)
     params: dict = Field(default_factory=dict)  # Strategy param overrides
     enabled: bool = True
+    long_only: bool = False             # If True, ignore short signals (e.g., inverse ETFs)
 
 
 class RiskConfig(BaseModel):

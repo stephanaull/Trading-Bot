@@ -24,6 +24,7 @@ from alpaca.trading.enums import (
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from alpaca.data.enums import DataFeed
 
 from engine.order import Order, Trade
 from bot.broker.base import BaseBroker, OrderRejectedException
@@ -305,6 +306,7 @@ class AlpacaBroker(BaseBroker):
             start=start,
             end=end,
             limit=limit,
+            feed=DataFeed.IEX,
         )
 
         bars = self._data_client.get_stock_bars(request)

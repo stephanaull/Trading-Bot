@@ -53,6 +53,7 @@ class LiveEngine:
         pct_equity: float = 0.90,
         fixed_size: float = 10_000.0,
         risk_pct: float = 0.02,
+        long_only: bool = False,
     ):
         """
         Args:
@@ -85,6 +86,9 @@ class LiveEngine:
         self._pct_equity = pct_equity
         self._fixed_size = fixed_size
         self._risk_pct = risk_pct
+
+        # Long-only mode (e.g., inverse ETFs that can't be shorted)
+        self._long_only = long_only
 
         # Track if we're actively trading
         self.active = True
@@ -159,6 +163,13 @@ class LiveEngine:
 
     async def _execute_signal(self, signal: Signal, row: pd.Series) -> None:
         """Execute a trading signal via the broker."""
+        # Long-only mode: skip short entries and close_short exits
+        if self._long_only and signal.direction in ("short", "close_short"):
+            logger.debug(
+                f"[{self.ticker}] Ignoring {signal.direction} signal (long_only mode)"
+            )
+            return
+
         if signal.direction in ("long", "short"):
             # Risk check before opening
             if self.risk_manager:
@@ -245,11 +256,12 @@ class LiveEngine:
             except Exception as e:
                 logger.error(f"[{self.ticker}] DB save entry failed: {e}")
 
+        sl_str = f"${signal.stop_loss:.2f}" if signal.stop_loss else "none"
+        tp_str = f"${signal.take_profit:.2f}" if signal.take_profit else "none"
         logger.info(
             f"[{self.ticker}] ENTRY: {signal.direction} {trade.quantity:.0f} "
             f"@ ${trade.entry_price:.2f} "
-            f"(SL: ${signal.stop_loss:.2f if signal.stop_loss else 0}, "
-            f"TP: ${signal.take_profit:.2f if signal.take_profit else 0}) "
+            f"(SL: {sl_str}, TP: {tp_str}) "
             f"— {signal.reason}"
         )
 

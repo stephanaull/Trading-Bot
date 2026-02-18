@@ -58,4 +58,12 @@ params = {}
 file = "strategies/mstr_supertrend_v1.py"
 timeframe = "5m"
 enabled = true
+long_only = true    # Inverse ETF — short signals don't make sense
+params = { atr_stop_mult = 1.5, atr_target_mult = 3.5 }
+
+[strategies.MSTU]
+file = "strategies/mstr_supertrend_v1.py"
+timeframe = "5m"
+enabled = true
+long_only = true    # Leveraged ETF — short signals don't make sense
 params = { atr_stop_mult = 1.5, atr_target_mult = 3.5 }
