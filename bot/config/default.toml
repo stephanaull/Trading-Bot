@@ -1,0 +1,61 @@
+# Trading Bot Configuration
+# Copy this file to bot/config/local.toml and fill in your values.
+# Secrets (API keys) should be set as environment variables instead.
+
+# --- Alpaca ---
+# Set these as environment variables:
+#   export ALPACA_API_KEY="your-key"
+#   export ALPACA_SECRET_KEY="your-secret"
+paper_trading = true
+
+# --- Position Sizing ---
+position_sizing = "percent"
+pct_equity = 0.90          # 90% of equity per trade
+# fixed_size = 10000.0     # For fixed sizing
+# risk_pct = 0.02          # For risk_based sizing
+
+# --- Webhook (TradingView) ---
+webhook_enabled = false
+webhook_port = 8080
+# Set as environment variable:
+#   export WEBHOOK_PASSPHRASE="your-passphrase"
+
+# --- Discord ---
+# Set as environment variable:
+#   export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+
+# --- Storage ---
+db_path = "bot/data/trading.db"
+
+# --- Logging ---
+log_level = "INFO"
+log_file = "bot/data/bot.log"
+
+# --- Risk Management ---
+[risk]
+max_daily_loss = 3000.0      # Pause if daily loss exceeds $3,000
+max_drawdown_pct = 15.0      # Circuit breaker at 15% drawdown
+max_position_value_pct = 0.90
+max_positions = 1
+cooldown_after_stop = 0
+
+# --- Strategies ---
+# One section per ticker. The bot creates a LiveEngine for each enabled strategy.
+
+[strategies.MSTR]
+file = "strategies/mstr_supertrend_v1.py"
+timeframe = "5m"
+enabled = true
+params = { atr_stop_mult = 1.5, atr_target_mult = 3.5 }
+
+[strategies.PLTR]
+file = "strategies/pltr_supertrend_v2.py"
+timeframe = "10m"
+enabled = true
+params = {}
+
+[strategies.MSTZ]
+file = "strategies/mstr_supertrend_v1.py"
+timeframe = "5m"
+enabled = true
+params = { atr_stop_mult = 1.5, atr_target_mult = 3.5 }

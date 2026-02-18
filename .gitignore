@@ -14,3 +14,5 @@ reports/*.html
 reports/*.csv
 reports/*.png
 *.DS_Store
+bot/data/*.db
+bot/data/*.log
