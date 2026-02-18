@@ -6,73 +6,112 @@ Update this file after each working session to track strategy iterations.
 ---
 
 ## Active Work
-- **Tickers**: MSTR (5m), PLTR (10m)
-- **Capital**: $60,000 (margin account)
+- **Tickers**: MSTR (5m), PLTR (10m), MSTZ (5m)
+- **Capital**: $60,000 (margin account, Webull — ZERO COMMISSION)
+- **Backtest Settings**: 90% equity/trade, fill-on-close, 0% commission, 0.02% slippage
 - **Data**:
-  - data/MSTR_5m.csv (1,668 bars, 2026-02-04 to 2026-02-17, BATS exchange)
-  - data/PLTR_10m.csv (682 bars, 2026-01-20 to 2026-02-13, yfinance 5m resampled)
-- **Best MSTR Strategy**: mstr_orb_v1.py (ORB) -- PF 1.51
-- **Best PLTR Strategy**: pltr_sma_cross_v1.py (SMA Cross) -- PF 1.72, +$233
+  - data/MSTR_5m.csv (1,668 bars, 2026-02-04 to 2026-02-17, ~10 days)
+  - data/PLTR_10m.csv (682 bars, 2026-01-20 to 2026-02-13, ~18 days)
+  - data/MSTZ_5m.csv (6,236 bars, 2025-12-24 to 2026-02-17, ~45 days)
 
-## Strategy Iterations
+## Best Strategies Per Ticker
+- **MSTR**: SuperTrend+ADX → +$7,204 (+12.0%), PF 1.40, 55 trades (29L/26S)
+- **PLTR**: VWAP Momentum v1 → +$5,963 (+9.9%), PF 2.36, 25 trades (8L/17S)
+- **MSTZ**: SuperTrend+ADX → +$35,401 (+59.0%), PF 1.28, 230 trades (125L/105S)
+- **Combined**: +$48,568 on $60k across all three tickers
 
-### MSTR - Opening Range Breakout (2026-02-17) -- RANK #1
-- v1: 15-min ORB with 2x range target, range-based stops. Net +$308 (+0.51%), PF 1.51, Win 67%, 6 trades, Max DD -0.93%. Best risk-adjusted. [BEST]
+---
 
-### MSTR - EMA Scalp (2026-02-17) -- RANK #2
-- v1: EMA 5/13 cross with EMA 50 trend filter, ATR 1.5x/2.5x stops. Net +$194 (+0.32%), PF 1.06, Win 38%, 73 trades, Max DD -2.56%. High trade count but marginal edge. [KEPT]
+## Session 2 — Aggressive Strategy Overhaul (2026-02-17)
 
-### MSTR - Oversold Reversal (2026-02-17) -- RANK #3
-- v1: RSI(7) < 25 + BB lower touch + bullish candle confirmation. Net -$127 (-0.21%), PF 0.83, Win 47%, 15 trades, Max DD -0.85%. Close to breakeven, decent win rate but avg loss > avg win. Best reversal strategy. [KEPT - ITERATE]
+### Key Changes Made
+1. Fixed SuperTrend indicator bug (was stuck bullish, never flipped bearish)
+2. Added built-in implementations: Stochastic, ADX, SuperTrend
+3. Switched to Webull settings: ZERO commission, minimal 0.02% slippage
+4. Increased position sizing: 90% equity per trade (margin account)
+5. All strategies now trade BOTH long and short
+6. Tight 1x ATR stops with 2.3-3x ATR targets (minimum 2.3:1 R:R)
+7. Session filters to avoid pre/after-hours
+8. Added MSTZ ticker (45 days of data — most statistically significant)
 
-### MSTR - Overbought Reversal (2026-02-17) -- RANK #4
-- v1: RSI(7) > 75 + BB upper touch + bearish candle, short entries. Net -$420 (-0.70%), PF 0.27, Win 30%, 10 trades, Max DD -1.06%. Shorting MSTR overbought is hard -- stock trends strongly, reversals get run over. [DELETE CANDIDATE]
+### MSTR Rankings (Session 2, Webull settings)
+| # | Strategy | Net Profit | PF | Win% | Trades | MaxDD | L/S |
+|---|----------|-----------|-----|------|--------|-------|-----|
+| 1 | SuperTrend+ADX | +$7,204 (+12.0%) | 1.40 | 38% | 55 | -10.9% | 29L/26S |
+| 2 | MACD+RSI v1 | +$6,296 (+10.5%) | 1.84 | 48% | 40 | -3.7% | 20L/20S |
+| 3 | MACD+RSI v2 | +$5,996 (+10.0%) | 2.05 | 48% | 33 | -2.5% | 17L/16S |
+| 4 | VWAP Momentum | +$2,836 (+4.7%) | 1.24 | 37% | 41 | -4.4% | 22L/19S |
+| 5 | ORB | +$2,714 (+4.5%) | 1.79 | 67% | 6 | -5.3% | 1L/5S |
+| 6 | Stoch+RSI | +$1,455 (+2.4%) | 1.31 | 44% | 16 | -3.4% | 7L/9S |
 
-### MSTR - SMA Cross (2026-02-17) -- RANK #5
-- v1: SMA 10/30 cross with RSI filter + volume confirmation. Net -$1,719 (-2.87%), PF 0.18, Win 9.5%, 21 trades. Worst performer. SMA too slow for 5m. [DELETE CANDIDATE]
+### PLTR Rankings (Session 2, Webull settings)
+| # | Strategy | Net Profit | PF | Win% | Trades | MaxDD | L/S |
+|---|----------|-----------|-----|------|--------|-------|-----|
+| 1 | VWAP Momentum v1 | +$5,963 (+9.9%) | 2.36 | 60% | 25 | -2.4% | 8L/17S |
+| 2 | VWAP Momentum v2 | +$5,624 (+9.4%) | 2.48 | 60% | 25 | -3.2% | 8L/17S |
+| 3 | MACD+RSI | +$5,090 (+8.5%) | 1.91 | 46% | 35 | -4.5% | 13L/22S |
+| 4 | SuperTrend+ADX | +$2,377 (+4.0%) | 1.15 | 39% | 56 | -5.4% | 18L/38S |
+| 5 | SMA Cross | +$2,116 (+3.5%) | 2.25 | 60% | 5 | -2.7% | 2L/3S |
+| 6 | Stoch+RSI | -$1,509 (-2.5%) | 0.43 | 30% | 10 | -3.4% | 5L/5S |
 
-### PLTR - SMA Cross (2026-02-17) -- RANK #1
-- v1: SMA 10/30 + RSI filter + volume 1.0x (relaxed for 10m). Net +$233 (+0.39%), PF 1.72, Win 60%, 5 trades, Max DD -0.51%. Best overall for PLTR -- slower MA works better on 10m. [BEST]
+### MSTZ Rankings (Session 2, Webull settings) — MOST DATA
+| # | Strategy | Net Profit | PF | Win% | Trades | MaxDD | L/S |
+|---|----------|-----------|-----|------|--------|-------|-----|
+| 1 | SuperTrend+ADX | +$35,401 (+59.0%) | 1.28 | 33% | 230 | -19.5% | 125L/105S |
+| 2 | VWAP Momentum | +$17,627 (+29.4%) | 1.27 | 36% | 140 | -12.7% | 73L/67S |
+| 3 | MACD+RSI v1 | +$15,689 (+26.1%) | 1.27 | 38% | 176 | -12.0% | 98L/78S |
+| 4 | ORB | +$8,944 (+14.9%) | 3.29 | 83% | 6 | -5.4% | 1L/5S |
+| 5 | MACD+RSI v2 | +$8,852 (+14.8%) | 1.18 | 36% | 143 | -10.7% | 76L/67S |
+| 6 | Stoch+RSI | -$8,845 (-14.7%) | 0.64 | 28% | 60 | -22.3% | 32L/28S |
 
-### PLTR - Oversold Reversal (2026-02-17) -- RANK #2
-- v1: RSI(7) < 25 + BB lower touch + bullish candle → long. Net +$217 (+0.36%), PF inf (no losers), Win 100%, 2 trades, Max DD -0.20%. Perfect record but only 2 trades -- needs more data. [KEPT - NEEDS DATA]
+---
 
-### PLTR - Overbought Reversal (2026-02-17) -- RANK #3
-- v1: RSI(7) > 75 + BB upper + bearish candle → short. Net +$47 (+0.08%), PF 4.74, Win 50%, 2 trades, Max DD -0.12%. Profitable but tiny sample size. [KEPT - NEEDS DATA]
+## Cross-Ticker Insights (Session 2)
+- **SuperTrend+ADX dominates on volatile stocks**: #1 on both MSTR and MSTZ
+- **VWAP Momentum dominates on PLTR**: lower-volatility stock benefits from VWAP mean-reversion
+- **MACD+RSI is consistently good**: Top 3 on all three tickers
+- **Stoch+RSI consistently worst**: DELETE across all tickers
+- **ORB has high PF but too few trades**: only 6 trades, not scalable
+- **MACD v2 (stricter filters) trades less = lower net profit but better PF**: useful for risk management
+- **Commission-free trading is a massive edge**: strategies that were marginal with 0.1% commission became highly profitable
+- **All top strategies trade BOTH directions** — critical for volatile stocks
 
-### PLTR - EMA Scalp (2026-02-17) -- RANK #4
-- v1: EMA 8/21 cross + EMA 50 trend filter + ATR stops. Net -$34 (-0.06%), PF 0.96, Win 44%, 16 trades, Max DD -0.78%. Near breakeven, most active strategy. [KEPT - ITERATE]
+## Strategy Files
+### New (Session 2)
+- `strategies/mstr_vwap_momentum_v1.py` — VWAP + EMA + RSI + volume, session filter
+- `strategies/mstr_supertrend_v1.py` — SuperTrend + ADX + RSI + EMA50, session filter
+- `strategies/mstr_macd_rsi_v1.py` — MACD histogram + RSI + dual EMA, 1x/2.5x ATR
+- `strategies/mstr_macd_rsi_v2.py` — v2: stricter filters, 1x/3x ATR, min ATR threshold
+- `strategies/mstr_stoch_rsi_v1.py` — Stochastic + RSI + EMA [DELETE CANDIDATE]
+- `strategies/pltr_vwap_momentum_v1.py` — VWAP + EMA + RSI for 10m
+- `strategies/pltr_vwap_momentum_v2.py` — v2: 3x target + trailing stop
+- `strategies/pltr_supertrend_v1.py` — SuperTrend + ADX + RSI for 10m
+- `strategies/pltr_macd_rsi_v1.py` — MACD + RSI + EMA for 10m
+- `strategies/pltr_stoch_rsi_v1.py` — Stochastic + RSI [DELETE CANDIDATE]
 
-### PLTR - ORB (2026-02-17) -- RANK #5
-- v1: 30-min ORB (3 bars @ 10m), 2x range target, session filter. Net -$154 (-0.26%), PF 0.81, Win 25%, 12 trades, Max DD -1.05%. Underperformed on PLTR unlike MSTR. [DELETE CANDIDATE]
-
-## Cross-Ticker Observations (2026-02-17)
-- **MSTR vs PLTR are opposite**: ORB is #1 on MSTR but #5 on PLTR; SMA is #5 on MSTR but #1 on PLTR
-- **PLTR favors slower strategies**: SMA Cross and reversal strategies outperformed momentum/breakout
-- **MSTR favors breakout/momentum**: ORB and EMA outperformed mean-reversion
-- **Reversal strategies need more data**: 2 trades each on PLTR is not statistically significant
-- **Key insight**: Strategy selection must be ticker-specific. No one-size-fits-all approach
+### Session 1 (kept)
+- `strategies/mstr_orb_v1.py` — ORB (still solid PF, low trade count)
+- `strategies/pltr_sma_cross_v1.py` — SMA Cross (decent PF, low trades)
 
 ## Ideas Queue
-- ORB v2: Widen to 30-min opening range for more reliable levels
-- ORB v2: Add volume spike confirmation on breakout
-- ORB v2: Tighten session end to 19:00 UTC to avoid late-day chop
-- Oversold Rev v2: Loosen RSI threshold to 30, require volume spike, add trend filter (only buy dips in uptrend)
-- Oversold Rev v2: Use RSI(14) instead of RSI(7) for less noise
-- EMA v2: Add RSI divergence filter to reduce false crossovers
-- EMA v2: Try EMA 8/21 instead of 5/13
-- Combine ORB + Oversold: use ORB for breakouts, oversold reversal for pullback entries
-- Try VWAP bounce strategy (mean reversion to VWAP on 5m)
+- SuperTrend v2: Add trailing stop once in profit (lock gains on big moves)
+- SuperTrend v2: Tune multiplier (try 2.0 and 3.0 vs current 2.5)
+- MACD v3: Combine MACD + VWAP for confirmation (two strongest indicators)
+- Combine strategies: run SuperTrend + VWAP as a portfolio (uncorrelated signals)
+- Get more MSTR/PLTR data (60+ days) for statistical validation
+- Export top strategies to Pine Script for TradingView live testing
+- Implement position sizing cap (limit to 2x leverage on margin)
+- Test on other volatile stocks: NVDA, TSLA, COIN, SOXL
 
-## Ideas Queue - PLTR
-- SMA Cross v2: Try SMA 8/21 for faster signals, or add ADX trend strength filter
-- SMA Cross v2: Add trailing stop to let winners run further
-- Oversold Rev v2: Loosen RSI to 30, get more trade signals for statistical significance
-- EMA Scalp v2: Try EMA 5/13 (faster) or add volume filter to reduce whipsaws
-- Get 60+ days of PLTR data for more reliable results (only 682 bars currently)
-- Try VWAP bounce strategy on PLTR (may suit its mean-reverting nature)
+## Engine Fixes (Session 2)
+- Fixed SuperTrend built-in indicator: was stuck bullish due to NaN propagation in band adjustment
+- Added built-in Stochastic oscillator implementation
+- Added built-in ADX/DI+/DI- implementation
+- All 3 new indicators work without pandas-ta dependency
 
-## Data Issues / Notes
-- MSTR: Data is from BATS exchange, timestamps in UTC. Pre/after-hours included, strategies need session filtering. Only ~10 trading days. Price range $100-$140, high volatility, downtrend bias.
-- PLTR: Downloaded via yfinance (5m resampled to 10m since yfinance doesn't support 10m). 682 bars over ~18 trading days (Jan 20 - Feb 13 2026). Less volatile than MSTR, more mean-reverting behavior.
-- Both datasets are short (10-18 days). Results are preliminary -- need 60+ days for statistical confidence.
+## Data Notes
+- MSTR: BATS exchange, timestamps need UTC conversion. ~10 trading days. Price $100-$139.
+- PLTR: yfinance 5m resampled to 10m. ~18 trading days. Price $127-$172.
+- MSTZ: BATS exchange, leveraged inverse MSTR ETF. 45 trading days (best dataset). Price $10-$31.
+- MSTZ has the most data = most statistically significant results
+- Webull: zero commission, PFOF-based, tight spreads (0.02% slippage estimate)

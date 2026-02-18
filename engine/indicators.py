@@ -297,6 +297,134 @@ class Indicators:
                     obv.append(obv[-1])
             df["OBV"] = obv
 
+        elif name == "stoch":
+            k = params.get("k", 14)
+            d = params.get("d", 3)
+            smooth_k = params.get("smooth_k", 3)
+            low_min = df["low"].rolling(window=k).min()
+            high_max = df["high"].rolling(window=k).max()
+            raw_k = 100 * (df["close"] - low_min) / (high_max - low_min)
+            stoch_k = raw_k.rolling(window=smooth_k).mean()
+            stoch_d = stoch_k.rolling(window=d).mean()
+            df[f"STOCHk_{k}_{d}_{smooth_k}"] = stoch_k
+            df[f"STOCHd_{k}_{d}_{smooth_k}"] = stoch_d
+
+        elif name == "adx":
+            length = params.get("length", 14)
+            high = df["high"]
+            low = df["low"]
+            close = df["close"]
+            # True Range
+            prev_close = close.shift(1)
+            tr = pd.concat([
+                high - low,
+                (high - prev_close).abs(),
+                (low - prev_close).abs()
+            ], axis=1).max(axis=1)
+            # Directional Movement
+            up_move = high - high.shift(1)
+            down_move = low.shift(1) - low
+            plus_dm = pd.Series(0.0, index=df.index)
+            minus_dm = pd.Series(0.0, index=df.index)
+            plus_dm[(up_move > down_move) & (up_move > 0)] = up_move
+            minus_dm[(down_move > up_move) & (down_move > 0)] = down_move
+            # Smoothed averages (Wilder's smoothing = EWM with alpha=1/length)
+            atr_sm = tr.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+            plus_dm_sm = plus_dm.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+            minus_dm_sm = minus_dm.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+            # DI+ and DI-
+            plus_di = 100 * plus_dm_sm / atr_sm
+            minus_di = 100 * minus_dm_sm / atr_sm
+            # DX and ADX
+            dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+            adx_val = dx.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+            df[f"ADX_{length}"] = adx_val
+            df[f"DMP_{length}"] = plus_di
+            df[f"DMN_{length}"] = minus_di
+
+        elif name == "supertrend":
+            length = params.get("length", 7)
+            multiplier = params.get("multiplier", 3.0)
+            close_s = df["close"].values.astype(float)
+            high_s = df["high"].values.astype(float)
+            low_s = df["low"].values.astype(float)
+            n = len(df)
+
+            # ATR calculation
+            hl2 = (high_s + low_s) / 2.0
+            tr = np.zeros(n)
+            for i in range(1, n):
+                tr[i] = max(high_s[i] - low_s[i],
+                            abs(high_s[i] - close_s[i-1]),
+                            abs(low_s[i] - close_s[i-1]))
+            tr[0] = high_s[0] - low_s[0]
+
+            # Wilder's smoothed ATR
+            atr_arr = np.full(n, np.nan)
+            atr_arr[length-1] = np.mean(tr[:length])
+            for i in range(length, n):
+                atr_arr[i] = (atr_arr[i-1] * (length - 1) + tr[i]) / length
+
+            basic_ub = hl2 + multiplier * atr_arr
+            basic_lb = hl2 - multiplier * atr_arr
+
+            final_ub = np.full(n, np.nan)
+            final_lb = np.full(n, np.nan)
+            st_dir = np.ones(n)
+            st_vals = np.full(n, np.nan)
+
+            # Initialize at the first valid ATR bar
+            start = length - 1
+            final_ub[start] = basic_ub[start]
+            final_lb[start] = basic_lb[start]
+            # Determine initial direction
+            if close_s[start] > basic_ub[start]:
+                st_dir[start] = 1
+                st_vals[start] = final_lb[start]
+            else:
+                st_dir[start] = -1
+                st_vals[start] = final_ub[start]
+
+            for i in range(start + 1, n):
+                if np.isnan(basic_lb[i]) or np.isnan(basic_ub[i]):
+                    final_lb[i] = final_lb[i-1]
+                    final_ub[i] = final_ub[i-1]
+                    st_dir[i] = st_dir[i-1]
+                    st_vals[i] = st_vals[i-1]
+                    continue
+
+                # Final lower band: ratchet up only when price is above it
+                if basic_lb[i] > final_lb[i-1] or close_s[i-1] < final_lb[i-1]:
+                    final_lb[i] = basic_lb[i]
+                else:
+                    final_lb[i] = final_lb[i-1]
+
+                # Final upper band: ratchet down only when price is below it
+                if basic_ub[i] < final_ub[i-1] or close_s[i-1] > final_ub[i-1]:
+                    final_ub[i] = basic_ub[i]
+                else:
+                    final_ub[i] = final_ub[i-1]
+
+                # Direction
+                prev_dir = st_dir[i-1]
+                if prev_dir == 1:  # was bullish
+                    if close_s[i] < final_lb[i]:
+                        st_dir[i] = -1
+                        st_vals[i] = final_ub[i]
+                    else:
+                        st_dir[i] = 1
+                        st_vals[i] = final_lb[i]
+                else:  # was bearish
+                    if close_s[i] > final_ub[i]:
+                        st_dir[i] = 1
+                        st_vals[i] = final_lb[i]
+                    else:
+                        st_dir[i] = -1
+                        st_vals[i] = final_ub[i]
+
+            df[f"SUPERT_{length}_{multiplier}"] = st_vals
+            df[f"SUPERTd_{length}_{multiplier}"] = st_dir
+
         else:
             raise ValueError(f"Built-in implementation not available for '{name}'. "
                              f"Install pandas-ta: pip install pandas-ta")
