@@ -14,15 +14,15 @@ pct_equity = 0.90          # 90% of equity per trade
 # fixed_size = 10000.0     # For fixed sizing
 # risk_pct = 0.02          # For risk_based sizing
 
-# --- Webhook (TradingView) ---
-webhook_enabled = false
-webhook_port = 8080
-# Set as environment variable:
-#   export WEBHOOK_PASSPHRASE="your-passphrase"
-
-# --- Discord ---
-# Set as environment variable:
-#   export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+# --- Email Notifications (Gmail) ---
+# Set these as environment variables:
+#   export EMAIL_FROM="your-email@gmail.com"
+#   export EMAIL_TO="your-email@gmail.com"
+#   export EMAIL_PASSWORD="your-gmail-app-password"
+# Get an App Password: https://myaccount.google.com/apppasswords
+email_enabled = true
+email_smtp_server = "smtp.gmail.com"
+email_smtp_port = 587
 
 # --- Storage ---
 db_path = "bot/data/trading.db"

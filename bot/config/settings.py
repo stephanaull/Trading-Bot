@@ -51,13 +51,13 @@ class BotConfig(BaseModel):
     # Risk management
     risk: RiskConfig = Field(default_factory=RiskConfig)
 
-    # Webhook
-    webhook_enabled: bool = False
-    webhook_port: int = 8080
-    webhook_passphrase: str = ""
-
-    # Discord
-    discord_webhook_url: str = ""
+    # Email notifications (Gmail SMTP)
+    email_enabled: bool = True
+    email_smtp_server: str = "smtp.gmail.com"
+    email_smtp_port: int = 587
+    email_from: str = ""                # Your Gmail address
+    email_to: str = ""                  # Recipient (can be same as from)
+    email_password: str = ""            # Gmail App Password (NOT your login password)
 
     # Storage
     db_path: str = "bot/data/trading.db"
@@ -84,8 +84,9 @@ class BotConfig(BaseModel):
         env_overrides = {
             "alpaca_api_key": os.getenv("ALPACA_API_KEY"),
             "alpaca_secret_key": os.getenv("ALPACA_SECRET_KEY"),
-            "discord_webhook_url": os.getenv("DISCORD_WEBHOOK_URL"),
-            "webhook_passphrase": os.getenv("WEBHOOK_PASSPHRASE"),
+            "email_from": os.getenv("EMAIL_FROM"),
+            "email_to": os.getenv("EMAIL_TO"),
+            "email_password": os.getenv("EMAIL_PASSWORD"),
         }
 
         paper_env = os.getenv("BOT_PAPER_TRADING")
