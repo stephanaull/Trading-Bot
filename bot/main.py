@@ -17,6 +17,8 @@ from bot.feeds.alpaca_feed import AlpacaFeed
 from bot.engine.warmup import warmup_strategy, load_strategy
 from bot.engine.live_engine import LiveEngine
 from bot.notifications.daily_report import DailyReport
+from bot.risk.manager import RiskManager
+from bot.storage.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -101,13 +103,23 @@ async def run_bot(config: BotConfig) -> None:
     shutdown_event = asyncio.Event()
 
     try:
-        # Step 1: Connect broker
+        # Step 1: Connect broker + initialize services
         await broker.connect()
         account = await broker.get_account()
         daily_report.set_account_start(account)
         daily_report.log_status(f"Bot started ({mode} mode)")
 
         _print_banner(mode, account, enabled)
+
+        # Initialize risk manager
+        risk_manager = RiskManager(
+            config=config.risk,
+            initial_equity=account["equity"],
+        )
+
+        # Initialize database
+        db = Database(db_path=config.db_path)
+        db.connect()
 
         # Step 2: Load strategies, warm up, create engines
         for ticker, strat_config in enabled.items():
@@ -133,6 +145,8 @@ async def run_bot(config: BotConfig) -> None:
                 broker=broker,
                 daily_report=daily_report,
                 initial_df=df,
+                risk_manager=risk_manager,
+                db=db,
                 position_sizing=config.position_sizing,
                 pct_equity=config.pct_equity,
                 fixed_size=config.fixed_size,
@@ -210,7 +224,7 @@ async def run_bot(config: BotConfig) -> None:
         logger.error(f"Bot error: {e}", exc_info=True)
         daily_report.log_error(f"Fatal error: {e}")
     finally:
-        # Shutdown: save report
+        # Shutdown: save report + persist daily stats
         logger.info("Shutting down...")
         daily_report.log_status("Bot stopped")
 
@@ -221,9 +235,24 @@ async def run_bot(config: BotConfig) -> None:
         except Exception:
             pass
 
+        # Save daily P&L to database
+        try:
+            stats = risk_manager.get_daily_stats()
+            db.save_daily_pnl(
+                realized_pnl=stats["daily_pnl"],
+                trades=stats["trades"],
+                wins=stats["wins"],
+                losses=stats["losses"],
+                equity_start=account.get("equity", 0),
+                equity_end=end_account.get("equity", 0) if end_account else None,
+            )
+        except Exception:
+            pass
+
         report_path = daily_report.save()
         logger.info(f"Daily report saved: {report_path}")
 
+        db.close()
         await feed.disconnect()
         await broker.disconnect()
 

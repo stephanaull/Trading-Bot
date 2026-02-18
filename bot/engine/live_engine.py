@@ -24,6 +24,8 @@ from engine.position import Position
 from bot.broker.base import BaseBroker, OrderRejectedException
 from bot.engine.reconciler import Reconciler
 from bot.notifications.daily_report import DailyReport
+from bot.risk.manager import RiskManager
+from bot.storage.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,8 @@ class LiveEngine:
         broker: BaseBroker,
         daily_report: DailyReport,
         initial_df: pd.DataFrame,
+        risk_manager: RiskManager = None,
+        db: Database = None,
         position_sizing: str = "percent",
         pct_equity: float = 0.90,
         fixed_size: float = 10_000.0,
@@ -57,6 +61,8 @@ class LiveEngine:
             broker: Connected broker for order execution
             daily_report: Shared daily report for logging trades
             initial_df: DataFrame from warmup (indicators already computed)
+            risk_manager: Shared risk manager (optional, blocks risky orders)
+            db: Shared database for trade persistence (optional)
             position_sizing: "fixed", "percent", "risk_based"
             pct_equity: Fraction of equity for percent sizing
             fixed_size: Dollar amount for fixed sizing
@@ -66,10 +72,13 @@ class LiveEngine:
         self.strategy = strategy
         self.broker = broker
         self.daily_report = daily_report
+        self.risk_manager = risk_manager
+        self.db = db
         self._df = initial_df.copy()
         self._position: Optional[Position] = None
         self._bar_count = 0
         self._reconciler = Reconciler()
+        self._current_trade_db_id: Optional[int] = None
 
         # Position sizing config
         self._sizing_method = position_sizing
@@ -151,6 +160,25 @@ class LiveEngine:
     async def _execute_signal(self, signal: Signal, row: pd.Series) -> None:
         """Execute a trading signal via the broker."""
         if signal.direction in ("long", "short"):
+            # Risk check before opening
+            if self.risk_manager:
+                try:
+                    account = await self.broker.get_account()
+                    allowed, reason = self.risk_manager.check_new_order(
+                        signal, self.ticker, row["close"],
+                        account["equity"], account["buying_power"],
+                    )
+                    if not allowed:
+                        logger.warning(
+                            f"[{self.ticker}] Order blocked by risk manager: {reason}"
+                        )
+                        self.daily_report.log_risk_event(
+                            f"{self.ticker}: Order blocked — {reason}"
+                        )
+                        return
+                except Exception as e:
+                    logger.error(f"[{self.ticker}] Risk check failed: {e}")
+
             await self._open_position(signal, row)
         elif signal.direction in ("close_long", "close_short", "flat"):
             await self._close_position(signal, row)
@@ -197,6 +225,25 @@ class LiveEngine:
             take_profit=signal.take_profit,
             trailing_stop_distance=signal.trailing_stop_distance,
         )
+
+        # Track in risk manager
+        if self.risk_manager:
+            self.risk_manager.record_trade_opened(self.ticker)
+
+        # Persist to database
+        if self.db:
+            try:
+                self._current_trade_db_id = self.db.save_trade_entry(
+                    ticker=self.ticker,
+                    direction=signal.direction,
+                    quantity=trade.quantity,
+                    entry_price=trade.entry_price,
+                    stop_loss=signal.stop_loss,
+                    take_profit=signal.take_profit,
+                    signal_reason=signal.reason,
+                )
+            except Exception as e:
+                logger.error(f"[{self.ticker}] DB save entry failed: {e}")
 
         logger.info(
             f"[{self.ticker}] ENTRY: {signal.direction} {trade.quantity:.0f} "
@@ -246,6 +293,30 @@ class LiveEngine:
         pnl_pct = (pnl / (entry_price * quantity)) * 100 if entry_price > 0 else 0
         result = "WIN" if pnl >= 0 else "LOSS"
         reason = signal.reason or "strategy_exit"
+
+        # Track in risk manager
+        if self.risk_manager:
+            self.risk_manager.record_trade_closed(self.ticker, pnl)
+            # Check if risk manager paused us
+            if self.risk_manager.is_paused:
+                self.pause()
+                self.daily_report.log_risk_event(
+                    f"Trading paused: {self.risk_manager.pause_reason}"
+                )
+
+        # Persist to database
+        if self.db and self._current_trade_db_id:
+            try:
+                self.db.save_trade_exit(
+                    trade_id=self._current_trade_db_id,
+                    exit_price=exit_price,
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
+                    exit_reason=reason,
+                )
+                self._current_trade_db_id = None
+            except Exception as e:
+                logger.error(f"[{self.ticker}] DB save exit failed: {e}")
 
         logger.info(
             f"[{self.ticker}] EXIT ({result}): {self._position.direction} "
