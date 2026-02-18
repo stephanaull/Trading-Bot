@@ -347,15 +347,34 @@ async def _periodic_reconcile(engines: dict, interval: int = 300) -> None:
 
 
 def _print_banner(mode: str, account: dict, strategies: dict) -> None:
-    """Print startup banner."""
-    print(f"\n{'='*50}")
+    """Print startup banner with day trading info."""
+    pdt = account.get("pattern_day_trader", False)
+    dt_count = account.get("daytrade_count", 0)
+    multiplier = account.get("multiplier", 1)
+    regt_bp = account.get("regt_buying_power", account["buying_power"])
+    dt_bp = account.get("daytrading_buying_power", 0)
+
+    # Determine day trade status
+    if pdt:
+        dt_status = f"PDT — Unlimited day trades ({multiplier}x margin)"
+    elif account["equity"] >= 25_000:
+        dt_status = f"Above $25k — Unlimited day trades ({multiplier}x margin)"
+    else:
+        dt_remaining = max(0, 3 - dt_count)
+        dt_status = f"{dt_remaining} day trades remaining (non-PDT, {dt_count}/3 used)"
+
+    print(f"\n{'='*60}")
     print(f"  Trading Bot — {mode} Mode")
-    print(f"{'='*50}")
-    print(f"  Equity:       ${account['equity']:>12,.2f}")
-    print(f"  Cash:         ${account['cash']:>12,.2f}")
-    print(f"  Buying Power: ${account['buying_power']:>12,.2f}")
-    print(f"  Status:       {account['status']}")
-    print(f"{'='*50}")
+    print(f"{'='*60}")
+    print(f"  Equity:           ${account['equity']:>12,.2f}")
+    print(f"  Cash:             ${account['cash']:>12,.2f}")
+    print(f"  Buying Power:     ${account['buying_power']:>12,.2f}")
+    print(f"  Reg-T BP:         ${regt_bp:>12,.2f}")
+    if dt_bp > 0:
+        print(f"  Day Trade BP:     ${dt_bp:>12,.2f}")
+    print(f"  Day Trades:       {dt_status}")
+    print(f"  Status:           {account['status']}")
+    print(f"{'='*60}")
     print(f"\n  Strategies ({len(strategies)}):")
     for ticker, strat in strategies.items():
         tfs = strat.get_timeframes()

@@ -5,11 +5,16 @@ must pass through check_new_order() before submission. If any limit is breached,
 the order is blocked and trading pauses.
 
 Limits enforced:
+- Trading blocked by broker  → pauses immediately
+- Equity below PDT threshold → pauses (risk of day trade restrictions)
 - Max daily loss ($)         → pauses all trading for the day
 - Max drawdown (%)           → circuit breaker, manual review needed
 - Max position value (%)     → prevents over-sizing
 - Max positions per ticker   → 1 (matching backtest behavior)
-- Session time filter         → blocks trades outside market hours
+- Max total positions        → limits concurrent open positions
+- Total exposure cap         → limits total $ at risk across all tickers
+- Buying power validation    → checks Reg-T buying power to avoid margin calls
+- Session time filter        → blocks trades outside market hours
 """
 
 import logging
@@ -55,6 +60,7 @@ class RiskManager:
         price: float,
         equity: float,
         buying_power: float,
+        account: Optional[dict] = None,
     ) -> tuple[bool, str]:
         """Validate an order against all risk limits.
 
@@ -66,6 +72,7 @@ class RiskManager:
             price: Current price
             equity: Current account equity
             buying_power: Available buying power
+            account: Full account dict from broker (optional, enables PDT/BP checks)
 
         Returns:
             (allowed: bool, reason: str)
@@ -82,12 +89,26 @@ class RiskManager:
         if self.is_paused:
             return False, f"Trading paused: {self.pause_reason}"
 
-        # Check 2: Daily loss limit
+        # Check 2: Trading blocked by broker
+        if account and account.get("trading_blocked"):
+            self._pause("Trading blocked by broker")
+            return False, self.pause_reason
+
+        # Check 3: Equity below PDT threshold ($25k)
+        min_equity = self.config.min_equity_for_trading
+        if min_equity > 0 and equity < min_equity:
+            self._pause(
+                f"Equity ${equity:,.2f} below minimum ${min_equity:,.2f} "
+                f"(PDT threshold — risk of day trade restrictions)"
+            )
+            return False, self.pause_reason
+
+        # Check 4: Daily loss limit
         if abs(self._daily_pnl) > 0 and self._daily_pnl <= -self.config.max_daily_loss:
             self._pause(f"Daily loss limit hit: ${self._daily_pnl:,.2f}")
             return False, self.pause_reason
 
-        # Check 3: Drawdown circuit breaker
+        # Check 5: Drawdown circuit breaker
         if equity > self.peak_equity:
             self.peak_equity = equity
         drawdown_pct = ((self.peak_equity - equity) / self.peak_equity) * 100
@@ -98,11 +119,11 @@ class RiskManager:
             )
             return False, self.pause_reason
 
-        # Check 4: Max position per ticker
+        # Check 6: Max position per ticker
         if ticker in self._open_positions:
             return False, f"Already in position for {ticker}"
 
-        # Check 5: Max total positions across all tickers
+        # Check 7: Max total positions across all tickers
         total_open = len(self._open_positions)
         if total_open >= self.config.max_total_positions:
             open_tickers = ", ".join(self._open_positions.keys())
@@ -111,7 +132,7 @@ class RiskManager:
                 f"{self.config.max_total_positions} ({open_tickers})"
             )
 
-        # Check 6: Total exposure check
+        # Check 8: Total exposure check
         current_exposure = sum(self._open_positions.values())
         max_total_exposure = equity * self.config.max_total_exposure_pct
         remaining_capacity = max_total_exposure - current_exposure
@@ -122,7 +143,7 @@ class RiskManager:
                 f"({self.config.max_total_exposure_pct*100:.0f}% of equity)"
             )
 
-        # Check 7: Position size vs equity
+        # Check 9: Position size vs equity
         max_value = equity * self.config.max_position_value_pct
         # Rough estimate — actual quantity is calculated later
         if price > max_value:
@@ -131,7 +152,20 @@ class RiskManager:
                 f"(${max_value:,.2f})"
             )
 
-        # Check 8: Session filter (market hours)
+        # Check 10: Buying power validation
+        # Use Reg-T buying power (2x for overnight holds). Ensures we don't
+        # exceed what Alpaca actually allows and trigger a margin call.
+        if self.config.enforce_buying_power and account:
+            regt_bp = account.get("regt_buying_power", buying_power)
+            available_bp = regt_bp - current_exposure
+            if available_bp <= 0:
+                return False, (
+                    f"Insufficient buying power: Reg-T BP ${regt_bp:,.0f}, "
+                    f"current exposure ${current_exposure:,.0f}, "
+                    f"available ${available_bp:,.0f}"
+                )
+
+        # Check 11: Session filter (market hours)
         if not self._session_filter.is_market_hours():
             return False, "Outside market hours"
 

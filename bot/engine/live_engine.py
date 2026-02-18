@@ -171,13 +171,14 @@ class LiveEngine:
             return
 
         if signal.direction in ("long", "short"):
-            # Risk check before opening
+            # Risk check before opening (pass full account for BP/PDT validation)
             if self.risk_manager:
                 try:
                     account = await self.broker.get_account()
                     allowed, reason = self.risk_manager.check_new_order(
                         signal, self.ticker, row["close"],
                         account["equity"], account["buying_power"],
+                        account=account,
                     )
                     if not allowed:
                         logger.warning(
@@ -390,12 +391,13 @@ class LiveEngine:
 
     async def _calculate_quantity(self, price: float,
                                   signal: Signal) -> float:
-        """Calculate position size, capped by remaining exposure capacity."""
+        """Calculate position size, capped by exposure capacity and buying power."""
         try:
             account = await self.broker.get_account()
-            equity = account["equity"]
+            equity = account.get("equity", 60_000)
         except Exception:
-            equity = 60_000  # Fallback
+            equity = 60_000
+            account = {"equity": equity, "regt_buying_power": equity * 2}
 
         # Calculate base desired amount
         if self._sizing_method == "fixed":
@@ -424,6 +426,18 @@ class LiveEngine:
                     f"(exposure cap)"
                 )
                 desired_value = remaining
+
+        # Cap by available Reg-T buying power (prevents margin violations)
+        current_exposure = sum(self.risk_manager._open_positions.values()) if self.risk_manager else 0
+        regt_bp = account.get("regt_buying_power", equity * 2)
+        available_bp = regt_bp - current_exposure
+        if desired_value > available_bp and available_bp > 0:
+            logger.info(
+                f"[{self.ticker}] Position sized down: "
+                f"${desired_value:,.0f} → ${available_bp:,.0f} "
+                f"(buying power cap, Reg-T BP: ${regt_bp:,.0f})"
+            )
+            desired_value = available_bp
 
         return max(1, int(desired_value / price))
 

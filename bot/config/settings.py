@@ -38,6 +38,10 @@ class RiskConfig(BaseModel):
     max_total_exposure_pct: float = 1.0 # Max total exposure as fraction of equity (1.0 = 100%)
     cooldown_after_stop: int = 0        # Bars to wait after a stop-out before re-entry
 
+    # Day trading / buying power protection
+    enforce_buying_power: bool = True   # Validate order value against Reg-T buying power
+    min_equity_for_trading: float = 25_000.0  # Pause if equity drops below this (PDT threshold)
+
 
 class BotConfig(BaseModel):
     """Top-level bot configuration."""

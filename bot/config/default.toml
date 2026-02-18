@@ -41,6 +41,10 @@ max_total_positions = 2       # Max positions across ALL tickers
 max_total_exposure_pct = 0.90 # Total $ exposure cap as % of equity (90% = no margin)
 cooldown_after_stop = 0
 
+# Day trading / buying power protection
+enforce_buying_power = true   # Validate order value against Reg-T buying power
+min_equity_for_trading = 25000.0  # Pause if equity drops below $25k (PDT threshold)
+
 # --- Strategies ---
 # Each ticker can run on multiple timeframes. The bot scores signals from
 # each timeframe and picks the best one to trade on (highest ADX, best R:R).

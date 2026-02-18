@@ -80,14 +80,33 @@ def cmd_account(args):
         await broker.disconnect()
 
         mode = "PAPER" if config.paper_trading else "LIVE"
-        print(f"\n{'='*50}")
+        pdt = account.get("pattern_day_trader", False)
+        dt_count = account.get("daytrade_count", 0)
+        multiplier = account.get("multiplier", 1)
+        regt_bp = account.get("regt_buying_power", account["buying_power"])
+        dt_bp = account.get("daytrading_buying_power", 0)
+
+        # Determine day trade status
+        if pdt:
+            dt_status = f"PDT — Unlimited day trades ({multiplier}x margin)"
+        elif account["equity"] >= 25_000:
+            dt_status = f"Above $25k — Unlimited day trades ({multiplier}x margin)"
+        else:
+            dt_remaining = max(0, 3 - dt_count)
+            dt_status = f"{dt_remaining} day trades remaining (non-PDT, {dt_count}/3 used)"
+
+        print(f"\n{'='*60}")
         print(f"  Account — {mode} Mode")
-        print(f"{'='*50}")
-        print(f"  Equity:       ${account['equity']:>12,.2f}")
-        print(f"  Cash:         ${account['cash']:>12,.2f}")
-        print(f"  Buying Power: ${account['buying_power']:>12,.2f}")
-        print(f"  Status:       {account['status']}")
-        print(f"  Market:       {'OPEN' if market_open else 'CLOSED'}")
+        print(f"{'='*60}")
+        print(f"  Equity:           ${account['equity']:>12,.2f}")
+        print(f"  Cash:             ${account['cash']:>12,.2f}")
+        print(f"  Buying Power:     ${account['buying_power']:>12,.2f}")
+        print(f"  Reg-T BP:         ${regt_bp:>12,.2f}")
+        if dt_bp > 0:
+            print(f"  Day Trade BP:     ${dt_bp:>12,.2f}")
+        print(f"  Day Trades:       {dt_status}")
+        print(f"  Status:           {account['status']}")
+        print(f"  Market:           {'OPEN' if market_open else 'CLOSED'}")
 
         if positions:
             print(f"\n  Open Positions ({len(positions)}):")
@@ -100,7 +119,7 @@ def cmd_account(args):
                 )
         else:
             print(f"\n  No open positions.")
-        print(f"{'='*50}\n")
+        print(f"{'='*60}\n")
 
     asyncio.run(_show())
 

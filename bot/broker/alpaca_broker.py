@@ -254,18 +254,28 @@ class AlpacaBroker(BaseBroker):
         ]
 
     async def get_account(self) -> dict:
-        """Get account information."""
+        """Get account information including day trading fields."""
         self._ensure_connected()
         account = self._trading_client.get_account()
+
+        # Day trading buying power (4x for PDT accounts, 0 for non-PDT)
+        dt_bp = float(account.daytrading_buying_power or 0)
+        regt_bp = float(account.regt_buying_power or account.buying_power or 0)
+
         return {
             "cash": float(account.cash),
             "equity": float(account.equity),
             "buying_power": float(account.buying_power),
-            "initial_capital": float(account.last_equity),
-            "day_trades_remaining": (
-                account.daytrade_count
-                if hasattr(account, "daytrade_count") else None
+            "regt_buying_power": regt_bp,
+            "daytrading_buying_power": dt_bp,
+            "non_marginable_buying_power": float(
+                account.non_marginable_buying_power or account.cash
             ),
+            "initial_capital": float(account.last_equity),
+            "daytrade_count": getattr(account, "daytrade_count", 0) or 0,
+            "pattern_day_trader": getattr(account, "pattern_day_trader", False),
+            "multiplier": int(account.multiplier or 1),
+            "trading_blocked": getattr(account, "trading_blocked", False),
             "currency": account.currency,
             "status": account.status.value if account.status else "unknown",
         }
