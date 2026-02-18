@@ -215,7 +215,7 @@ class MultiTimeframeEngine:
                 best_tf = tf
                 best_slot = slot
 
-        if best_slot and best_tf:
+        if best_slot and best_tf and best_score > 0:
             logger.info(
                 f"[{self.ticker}] Best timeframe: {best_tf} "
                 f"(score: {best_score:.1f})"
@@ -223,10 +223,26 @@ class MultiTimeframeEngine:
             await self._open_position(
                 best_slot.last_signal, best_slot.last_signal_row, best_tf
             )
+        elif best_score <= 0:
+            logger.info(
+                f"[{self.ticker}] All signals blocked or below threshold "
+                f"(best score: {best_score:.1f})"
+            )
 
         # Clear all buffered signals after evaluation
         for slot in self.slots.values():
             slot.last_signal = None
+
+    def _count_tf_agreement(self, signal: Signal) -> int:
+        """Count how many timeframes have a fresh signal in the same direction."""
+        count = 0
+        now = datetime.utcnow()
+        for tf, slot in self.slots.items():
+            if slot.last_signal and slot.last_signal_time:
+                age = (now - slot.last_signal_time).total_seconds()
+                if age < 120 and slot.last_signal.direction == signal.direction:
+                    count += 1
+        return count
 
     def _score_signal(self, slot: _TimeframeSlot) -> float:
         """Score a signal based on multiple factors.
@@ -237,11 +253,39 @@ class MultiTimeframeEngine:
         - ADX strength (0-100, weighted heavily)
         - Risk:Reward ratio from stop/target
         - Lower timeframe bonus (tighter stops, faster entries)
-        - Signal agreement across timeframes
+        - Signal agreement across timeframes (REQUIRED: minimum 2 TFs)
+        - RSI extreme rejection (hard block RSI > 80 longs, RSI < 20 shorts)
         """
         score = 0.0
         row = slot.last_signal_row
         signal = slot.last_signal
+
+        # ── HARD GATE: RSI extreme rejection ──
+        # No scoring needed — these entries are categorically bad
+        rsi = self._get_rsi(slot)
+        if rsi is not None:
+            if signal.direction == "long" and rsi > 80:
+                logger.info(
+                    f"[{self.ticker}/{slot.timeframe}] BLOCKED: RSI {rsi:.0f} > 80 "
+                    f"(overbought — skipping long)"
+                )
+                return -999  # Hard block
+            elif signal.direction == "short" and rsi < 20:
+                logger.info(
+                    f"[{self.ticker}/{slot.timeframe}] BLOCKED: RSI {rsi:.0f} < 20 "
+                    f"(oversold — skipping short)"
+                )
+                return -999  # Hard block
+
+        # ── HARD GATE: Require minimum 2 TFs in agreement ──
+        # Lone 2m signals are noisy. Require at least one other TF to confirm.
+        agreement_count = self._count_tf_agreement(signal)
+        if agreement_count < 2:
+            logger.info(
+                f"[{self.ticker}/{slot.timeframe}] BLOCKED: Only {agreement_count}/2 "
+                f"TFs agree on {signal.direction} — need at least 2"
+            )
+            return -999  # Hard block
 
         # 1. ADX strength (max ~40 points)
         adx = self._get_adx(slot)
@@ -266,25 +310,27 @@ class MultiTimeframeEngine:
         tf_bonus = max(0, 20 - slot.tf_minutes * 1.5)
         score += tf_bonus
 
-        # 4. Signal agreement bonus — if other TFs also signaling same direction
-        agreement = 0
-        for other_tf, other_slot in self.slots.items():
-            if other_slot is not slot and other_slot.last_signal:
-                if other_slot.last_signal.direction == signal.direction:
-                    agreement += 10  # 10 pts per agreeing TF
-        score += agreement
+        # 4. Signal agreement bonus — more agreement = higher conviction
+        # Already counted above, just add bonus points
+        agreement_bonus = (agreement_count - 1) * 15  # 15 pts per extra TF
+        score += agreement_bonus
 
-        # 5. RSI not extreme (avoid buying at RSI 80 or shorting at RSI 20)
-        rsi = self._get_rsi(slot)
+        # 5. RSI quality zone (55-75 is the sweet spot for longs)
         if rsi is not None:
-            if signal.direction == "long" and rsi < 70:
-                score += 5
-            elif signal.direction == "short" and rsi > 30:
-                score += 5
-            elif signal.direction == "long" and rsi > 80:
-                score -= 10  # Penalty for overbought
-            elif signal.direction == "short" and rsi < 20:
-                score -= 10  # Penalty for oversold
+            if signal.direction == "long":
+                if rsi < 70:
+                    score += 10  # Sweet spot
+                elif rsi < 75:
+                    score += 5   # Acceptable
+                else:
+                    score -= 5   # Getting hot (70-80 range)
+            elif signal.direction == "short":
+                if rsi > 30:
+                    score += 10
+                elif rsi > 25:
+                    score += 5
+                else:
+                    score -= 5
 
         return score
 

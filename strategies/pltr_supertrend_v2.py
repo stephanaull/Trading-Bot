@@ -1,14 +1,15 @@
-"""MSTR SuperTrend + ADX Strategy v2 (5m) — Smarter Filters.
+"""PLTR SuperTrend + ADX Strategy v2.1 — Smarter Filters + RSI Cap.
 
-Improvements over v1 based on trade-level loss analysis:
+Improvements over v2 based on live trading losses:
 1. ANTI-WHIPSAW: Require SuperTrend direction held for 2+ bars (no instant flip entries)
-2. STRONGER ADX: Raise ADX threshold from 20 to 25 (avoid weak trends)
-3. STRICTER RSI: RSI 55+ for longs, 45- for shorts (stronger momentum confirmation)
-4. VOLUME FILTER: Only trade when volume > 1.5x avg volume (confirms conviction)
+2. STRONGER ADX: ADX threshold at 25 (avoid weak trends)
+3. STRICTER RSI: RSI 55-80 for longs, 20-45 for shorts (momentum without chasing)
+4. VOLUME FILTER: Only trade when volume > 1.5x rolling avg (FIXED — was broken in v2)
 5. EARLIER SESSION END: Cut session at 17:00 UTC (late-day trades consistently lose)
 6. CANDLE BODY FILTER: Require candle body > 40% of range (avoid dojis/spinning tops)
 7. ATR FLOOR: Skip trades when ATR is below 20-period SMA of ATR (low vol = chop)
-8. NO RE-ENTRY COOLDOWN: After a stop loss, wait 3 bars before next entry
+8. RE-ENTRY COOLDOWN: After a stop loss, wait 3 bars before next entry
+9. RSI OVERBOUGHT/OVERSOLD CAP: Skip longs when RSI > 80, shorts when RSI < 20
 
 Uses SuperTrend for trend direction, ADX for trend strength,
 RSI for momentum, EMA for trend, volume + candle body for confirmation.
@@ -21,9 +22,9 @@ from engine.indicators import Indicators
 
 
 class Strategy(BaseStrategy):
-    name = "PLTR SuperTrend Momentum v2"
-    version = "v2"
-    description = "SuperTrend+ADX with anti-whipsaw, volume, candle body, ATR floor filters (10m)"
+    name = "PLTR SuperTrend Momentum v2.1"
+    version = "v2.1"
+    description = "SuperTrend+ADX with anti-whipsaw, volume, RSI cap, candle body, ATR floor (10m)"
     ticker = "PLTR"
     timeframe = "10m"
 
@@ -36,8 +37,8 @@ class Strategy(BaseStrategy):
         {"name": "sma", "params": {"length": 20}, "var": "vol_sma"},
     ]
     pine_conditions = {
-        "long_entry": "SUPERTd > 0 and ADX > 25 and rsi_val > 55 and close > trend_ema",
-        "short_entry": "SUPERTd < 0 and ADX > 25 and rsi_val < 45 and close < trend_ema",
+        "long_entry": "SUPERTd > 0 and ADX > 25 and rsi_val > 55 and rsi_val < 80 and close > trend_ema",
+        "short_entry": "SUPERTd < 0 and ADX > 25 and rsi_val < 45 and rsi_val > 20 and close < trend_ema",
     }
 
     def __init__(self, params=None):
@@ -52,7 +53,9 @@ class Strategy(BaseStrategy):
             "atr_stop_mult": 1.5,       # Default loosened stop
             "atr_target_mult": 3.5,     # Default 3.5x target
             "rsi_long_min": 55,         # Raised from 50 → 55 (stronger momentum)
+            "rsi_long_max": 80,         # NEW: skip overbought entries
             "rsi_short_max": 45,        # Lowered from 50 → 45
+            "rsi_short_min": 20,        # NEW: skip oversold shorts
             "session_start_hour": 14,
             "session_start_minute": 35,
             "session_end_hour": 17,     # Cut from 19:45 → 17:00 (late-day loses)
@@ -78,8 +81,9 @@ class Strategy(BaseStrategy):
         df = Indicators.add(df, "rsi", length=self.params["rsi_length"])
         df = Indicators.add(df, "atr", length=self.params["atr_length"])
         df = Indicators.add(df, "ema", length=self.params["trend_ema"])
-        # Volume SMA for volume filter
-        df = Indicators.add(df, "sma", length=self.params["volume_avg_len"])
+        # Volume rolling average for volume filter (rolling mean on volume column)
+        vol_avg_col = f"VOL_AVG_{self.params['volume_avg_len']}"
+        df[vol_avg_col] = df["volume"].rolling(self.params["volume_avg_len"]).mean()
         # ATR SMA for ATR floor
         atr_col = f"ATR_{self.params['atr_length']}"
         atr_sma_col = f"ATR_SMA_{self.params['atr_floor_len']}"
@@ -177,14 +181,12 @@ class Strategy(BaseStrategy):
         # Allow instant entry on flip, BUT require hold for non-flip entries
         st_held = self._st_dir_count >= self.params["st_hold_bars"]
 
-        # Filter 4: Volume confirmation
-        vol_sma_col = f"SMA_{self.params['volume_avg_len']}"
-        vol_ok = True
-        if volume > 0 and vol_sma_col in row.index:
-            vol_sma = row.get(vol_sma_col, 0)
-            # Note: SMA is on close, not volume. Use raw volume comparison instead.
-            # We'll compute volume avg inline
-            vol_ok = True  # Will check below with rolling
+        # Filter 4: Volume confirmation — require volume > N * rolling average
+        vol_avg_col = f"VOL_AVG_{self.params['volume_avg_len']}"
+        vol_avg = row.get(vol_avg_col, None)
+        if volume > 0 and vol_avg is not None and not pd.isna(vol_avg) and vol_avg > 0:
+            if volume < vol_avg * self.params["volume_mult"]:
+                return None  # Low conviction — skip
 
         # Filter 5: ATR floor — skip when volatility is below average (choppy market)
         if self.params["use_atr_floor"]:
@@ -206,6 +208,9 @@ class Strategy(BaseStrategy):
         # ── LONG ENTRY ──
         trend_up = ema_trend is not None and not pd.isna(ema_trend) and close > ema_trend
         if st_dir > 0 and rsi > self.params["rsi_long_min"]:
+            # RSI overbought cap — skip chasing
+            if rsi > self.params["rsi_long_max"]:
+                return None
             # Bullish candle required
             if close > open_p or st_flipped_bull:
                 # EMA filter (relaxed on flip)
@@ -224,6 +229,9 @@ class Strategy(BaseStrategy):
         # ── SHORT ENTRY ──
         trend_down = ema_trend is not None and not pd.isna(ema_trend) and close < ema_trend
         if st_dir < 0 and rsi < self.params["rsi_short_max"]:
+            # RSI oversold cap — skip chasing
+            if rsi < self.params["rsi_short_min"]:
+                return None
             if close < open_p or st_flipped_bear:
                 if trend_down or st_flipped_bear:
                     if st_held or st_flipped_bear:
