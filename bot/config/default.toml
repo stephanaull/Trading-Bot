@@ -35,8 +35,10 @@ log_file = "bot/data/bot.log"
 [risk]
 max_daily_loss = 3000.0      # Pause if daily loss exceeds $3,000
 max_drawdown_pct = 15.0      # Circuit breaker at 15% drawdown
-max_position_value_pct = 0.90
-max_positions = 1
+max_position_value_pct = 0.90 # Max single position as % of equity
+max_positions = 1             # Max positions per ticker (always 1)
+max_total_positions = 2       # Max positions across ALL tickers
+max_total_exposure_pct = 0.90 # Total $ exposure cap as % of equity (90% = no margin)
 cooldown_after_stop = 0
 
 # --- Strategies ---

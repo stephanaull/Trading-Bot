@@ -373,7 +373,8 @@ class MultiTimeframeEngine:
         self._active_tf = timeframe
 
         if self.risk_manager:
-            self.risk_manager.record_trade_opened(self.ticker)
+            position_value = trade.quantity * trade.entry_price
+            self.risk_manager.record_trade_opened(self.ticker, position_value)
 
         if self.db:
             try:
@@ -514,25 +515,42 @@ class MultiTimeframeEngine:
             )
 
     async def _calculate_quantity(self, price: float, signal: Signal) -> float:
-        """Calculate position size."""
+        """Calculate position size, capped by remaining exposure capacity."""
         try:
             account = await self.broker.get_account()
             equity = account["equity"]
         except Exception:
             equity = 60_000
 
+        # Calculate base desired amount
         if self._sizing_method == "fixed":
-            return max(1, int(self._fixed_size / price))
+            desired_value = self._fixed_size
         elif self._sizing_method == "percent":
-            return max(1, int(equity * self._pct_equity / price))
+            desired_value = equity * self._pct_equity
         elif self._sizing_method == "risk_based":
             if signal.stop_loss:
                 stop_dist = abs(price - signal.stop_loss)
                 if stop_dist > 0:
-                    return max(1, int(equity * self._risk_pct / stop_dist))
-            return max(1, int(equity * self._risk_pct / price))
+                    desired_value = (equity * self._risk_pct / stop_dist) * price
+                else:
+                    desired_value = equity * self._risk_pct
+            else:
+                desired_value = equity * self._risk_pct
         else:
-            return max(1, int(equity * self._pct_equity / price))
+            desired_value = equity * self._pct_equity
+
+        # Cap by remaining exposure capacity (global limit)
+        if self.risk_manager:
+            remaining = self.risk_manager.get_remaining_capacity(equity)
+            if desired_value > remaining:
+                logger.info(
+                    f"[{self.ticker}] Position sized down: "
+                    f"${desired_value:,.0f} → ${remaining:,.0f} "
+                    f"(exposure cap)"
+                )
+                desired_value = remaining
+
+        return max(1, int(desired_value / price))
 
     async def reconcile(self) -> dict:
         """Reconcile local position with broker."""

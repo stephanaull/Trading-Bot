@@ -42,8 +42,8 @@ class RiskManager:
         self.is_paused: bool = False
         self.pause_reason: str = ""
 
-        # Open positions per ticker
-        self._open_positions: dict[str, bool] = {}
+        # Open positions per ticker (ticker -> estimated position value)
+        self._open_positions: dict[str, float] = {}
 
         # Session filter
         self._session_filter = SessionFilter()
@@ -99,10 +99,30 @@ class RiskManager:
             return False, self.pause_reason
 
         # Check 4: Max position per ticker
-        if self._open_positions.get(ticker, False):
+        if ticker in self._open_positions:
             return False, f"Already in position for {ticker}"
 
-        # Check 5: Position size vs equity
+        # Check 5: Max total positions across all tickers
+        total_open = len(self._open_positions)
+        if total_open >= self.config.max_total_positions:
+            open_tickers = ", ".join(self._open_positions.keys())
+            return False, (
+                f"Max total positions reached: {total_open}/"
+                f"{self.config.max_total_positions} ({open_tickers})"
+            )
+
+        # Check 6: Total exposure check
+        current_exposure = sum(self._open_positions.values())
+        max_total_exposure = equity * self.config.max_total_exposure_pct
+        remaining_capacity = max_total_exposure - current_exposure
+        if remaining_capacity <= 0:
+            return False, (
+                f"Max total exposure reached: ${current_exposure:,.0f} / "
+                f"${max_total_exposure:,.0f} "
+                f"({self.config.max_total_exposure_pct*100:.0f}% of equity)"
+            )
+
+        # Check 7: Position size vs equity
         max_value = equity * self.config.max_position_value_pct
         # Rough estimate — actual quantity is calculated later
         if price > max_value:
@@ -111,21 +131,32 @@ class RiskManager:
                 f"(${max_value:,.2f})"
             )
 
-        # Check 6: Session filter (market hours)
+        # Check 8: Session filter (market hours)
         if not self._session_filter.is_market_hours():
             return False, "Outside market hours"
 
         return True, "approved"
 
-    def record_trade_opened(self, ticker: str) -> None:
-        """Track that a position was opened."""
-        self._open_positions[ticker] = True
+    def record_trade_opened(self, ticker: str, position_value: float = 0.0) -> None:
+        """Track that a position was opened.
+
+        Args:
+            ticker: Symbol
+            position_value: Estimated $ value of the position (qty * price)
+        """
+        self._open_positions[ticker] = position_value
         self._daily_trades += 1
+        total_open = len(self._open_positions)
+        total_exposure = sum(self._open_positions.values())
+        logger.info(
+            f"[Risk] Position opened: {ticker} (${position_value:,.0f}). "
+            f"Total: {total_open} positions, ${total_exposure:,.0f} exposure"
+        )
 
     def record_trade_closed(self, ticker: str, pnl: float) -> None:
         """Update daily P&L and position tracking after a trade closes."""
         self._check_day_rollover()
-        self._open_positions[ticker] = False
+        self._open_positions.pop(ticker, None)
         self._daily_pnl += pnl
 
         if pnl >= 0:
@@ -145,6 +176,25 @@ class RiskManager:
                 f"Daily loss limit hit: ${self._daily_pnl:,.2f} "
                 f"(limit: -${self.config.max_daily_loss:,.2f})"
             )
+
+    def get_remaining_capacity(self, equity: float) -> float:
+        """Get remaining $ capacity for new positions based on total exposure limit.
+
+        Used by engines to scale position sizes when other positions are open.
+
+        Args:
+            equity: Current account equity
+
+        Returns:
+            Remaining $ capacity (always >= 0)
+        """
+        max_total_exposure = equity * self.config.max_total_exposure_pct
+        current_exposure = sum(self._open_positions.values())
+        return max(0.0, max_total_exposure - current_exposure)
+
+    def get_open_position_count(self) -> int:
+        """Get number of currently open positions across all tickers."""
+        return len(self._open_positions)
 
     def get_daily_stats(self) -> dict:
         """Get current daily trading statistics."""

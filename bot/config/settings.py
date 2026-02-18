@@ -32,8 +32,10 @@ class RiskConfig(BaseModel):
     """Risk management settings."""
     max_daily_loss: float = 3000.0      # Pause trading if daily loss exceeds this ($)
     max_drawdown_pct: float = 15.0      # Circuit breaker: pause if drawdown exceeds (%)
-    max_position_value_pct: float = 0.90  # Max position as fraction of equity
+    max_position_value_pct: float = 0.90  # Max single position as fraction of equity
     max_positions: int = 1              # Max concurrent positions per ticker
+    max_total_positions: int = 2        # Max concurrent positions across ALL tickers
+    max_total_exposure_pct: float = 1.0 # Max total exposure as fraction of equity (1.0 = 100%)
     cooldown_after_stop: int = 0        # Bars to wait after a stop-out before re-entry
 
 
