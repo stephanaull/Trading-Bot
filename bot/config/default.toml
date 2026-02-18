@@ -38,7 +38,7 @@ max_drawdown_pct = 15.0      # Circuit breaker at 15% drawdown
 max_position_value_pct = 0.75 # Max single position as % of equity
 max_positions = 1             # Max positions per ticker (always 1)
 max_total_positions = 2       # Max positions across ALL tickers
-max_total_exposure_pct = 0.75 # Total $ exposure cap as % of equity (75% max)
+max_total_exposure_pct = 1.50 # Total $ exposure cap as % of equity (150% = two 75% positions via margin)
 cooldown_after_stop = 0
 
 # Day trading / buying power protection
