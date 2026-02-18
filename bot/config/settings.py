@@ -17,10 +17,15 @@ from pydantic import BaseModel, Field
 class StrategyConfig(BaseModel):
     """Configuration for a single ticker's strategy."""
     file: str                           # Path to strategy .py file
-    timeframe: str = "5m"               # Bar timeframe (1m, 2m, 5m, 10m, etc.)
+    timeframe: str = "5m"               # Primary timeframe (used if timeframes not set)
+    timeframes: list[str] = Field(default_factory=list)  # Multi-TF: ["2m", "5m", "10m"]
     params: dict = Field(default_factory=dict)  # Strategy param overrides
     enabled: bool = True
     long_only: bool = False             # If True, ignore short signals (e.g., inverse ETFs)
+
+    def get_timeframes(self) -> list[str]:
+        """Get list of timeframes (multi-TF or single fallback)."""
+        return self.timeframes if self.timeframes else [self.timeframe]
 
 
 class RiskConfig(BaseModel):

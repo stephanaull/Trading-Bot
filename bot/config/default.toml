@@ -40,30 +40,33 @@ max_positions = 1
 cooldown_after_stop = 0
 
 # --- Strategies ---
-# One section per ticker. The bot creates a LiveEngine for each enabled strategy.
+# Each ticker can run on multiple timeframes. The bot scores signals from
+# each timeframe and picks the best one to trade on (highest ADX, best R:R).
+# Use timeframes = ["2m", "5m", "10m"] for multi-TF mode.
+# Or use timeframe = "5m" for single-TF mode (legacy).
 
-[strategies.MSTR]
+[strategies.HIMS]
 file = "strategies/mstr_supertrend_v1.py"
-timeframe = "5m"
+timeframes = ["2m", "5m", "10m"]
 enabled = true
 params = { atr_stop_mult = 1.5, atr_target_mult = 3.5 }
 
 [strategies.PLTR]
 file = "strategies/pltr_supertrend_v2.py"
-timeframe = "10m"
+timeframes = ["2m", "5m", "10m"]
 enabled = true
 params = {}
 
 [strategies.MSTZ]
 file = "strategies/mstr_supertrend_v1.py"
-timeframe = "5m"
+timeframes = ["2m", "5m", "10m"]
 enabled = true
 long_only = true    # Inverse ETF — short signals don't make sense
 params = { atr_stop_mult = 1.5, atr_target_mult = 3.5 }
 
 [strategies.MSTU]
 file = "strategies/mstr_supertrend_v1.py"
-timeframe = "5m"
+timeframes = ["2m", "5m", "10m"]
 enabled = true
 long_only = true    # Leveraged ETF — short signals don't make sense
 params = { atr_stop_mult = 1.5, atr_target_mult = 3.5 }

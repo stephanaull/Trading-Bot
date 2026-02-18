@@ -1,7 +1,11 @@
 """Main entry point for the trading bot.
 
-Wires together: Broker → Feed → Aggregator → Warmup → LiveEngine → Reports.
-Runs one LiveEngine per configured ticker/strategy.
+Wires together: Broker → Feed → Aggregator → Warmup → Engine → Reports.
+
+Supports two modes per ticker:
+- Single timeframe: one LiveEngine per ticker (legacy)
+- Multi-timeframe: one MultiTimeframeEngine per ticker that runs
+  the strategy on 2m, 5m, 10m (etc.) and picks the best entry.
 """
 
 import asyncio
@@ -16,6 +20,7 @@ from bot.broker.alpaca_broker import AlpacaBroker
 from bot.feeds.alpaca_feed import AlpacaFeed
 from bot.engine.warmup import warmup_strategy, load_strategy
 from bot.engine.live_engine import LiveEngine
+from bot.engine.multi_tf_engine import MultiTimeframeEngine, _TimeframeSlot
 from bot.notifications.daily_report import DailyReport
 from bot.risk.manager import RiskManager
 from bot.storage.database import Database
@@ -57,15 +62,7 @@ def setup_logging(config: BotConfig) -> None:
 
 
 async def run_bot(config: BotConfig) -> None:
-    """Main bot loop: connect, warm up, stream bars, trade.
-
-    1. Connect to Alpaca (broker + data feed)
-    2. Load strategies and warm them up with historical data
-    3. Create LiveEngines (one per ticker)
-    4. Start WebSocket bar stream
-    5. Route aggregated bars to the right LiveEngine
-    6. On shutdown: save daily report
-    """
+    """Main bot loop: connect, warm up, stream bars, trade."""
     mode = "PAPER" if config.paper_trading else "LIVE"
     logger.info(f"=== Trading Bot Starting ({mode} mode) ===")
 
@@ -96,10 +93,11 @@ async def run_bot(config: BotConfig) -> None:
     feed = AlpacaFeed(
         api_key=config.alpaca_api_key,
         secret_key=config.alpaca_secret_key,
-        feed="iex",  # Free feed; use "sip" for real-time with paid plan
+        feed="iex",
     )
 
-    engines: dict[str, LiveEngine] = {}
+    # engines dict: ticker -> LiveEngine or MultiTimeframeEngine
+    engines: dict = {}
     shutdown_event = asyncio.Event()
 
     try:
@@ -123,44 +121,90 @@ async def run_bot(config: BotConfig) -> None:
 
         # Step 2: Load strategies, warm up, create engines
         for ticker, strat_config in enabled.items():
-            logger.info(f"--- Setting up {ticker} ---")
+            timeframes = strat_config.get_timeframes()
+            is_multi_tf = len(timeframes) > 1
 
-            # Load strategy
-            strategy = load_strategy(strat_config.file, strat_config.params)
+            if is_multi_tf:
+                # Multi-timeframe mode
+                logger.info(f"--- Setting up {ticker} (multi-TF: {', '.join(timeframes)}) ---")
+                slots = []
 
-            # Warm up with historical data
-            df = await warmup_strategy(
-                strategy, broker, ticker, strat_config.timeframe
-            )
+                for tf in timeframes:
+                    # Load a separate strategy instance per timeframe
+                    strategy = load_strategy(strat_config.file, strat_config.params)
 
-            if df.empty:
-                logger.warning(f"Skipping {ticker} — no historical data")
-                daily_report.log_error(f"{ticker}: No historical data for warmup")
-                continue
+                    # Warm up with the specific timeframe
+                    df = await warmup_strategy(strategy, broker, ticker, tf)
 
-            # Create LiveEngine
-            engine = LiveEngine(
-                ticker=ticker,
-                strategy=strategy,
-                broker=broker,
-                daily_report=daily_report,
-                initial_df=df,
-                risk_manager=risk_manager,
-                db=db,
-                position_sizing=config.position_sizing,
-                pct_equity=config.pct_equity,
-                fixed_size=config.fixed_size,
-                risk_pct=config.risk_pct,
-                long_only=strat_config.long_only,
-            )
+                    if df.empty:
+                        logger.warning(f"Skipping {ticker}/{tf} — no historical data")
+                        continue
 
-            # Reconcile — check if broker has existing positions
-            await engine.reconcile()
+                    slots.append(_TimeframeSlot(
+                        timeframe=tf,
+                        strategy=strategy,
+                        initial_df=df,
+                    ))
 
-            engines[ticker] = engine
-            daily_report.log_status(
-                f"Strategy loaded: {strategy.name} on {ticker} ({strat_config.timeframe})"
-            )
+                if not slots:
+                    logger.warning(f"Skipping {ticker} — no valid timeframes")
+                    continue
+
+                engine = MultiTimeframeEngine(
+                    ticker=ticker,
+                    slots=slots,
+                    broker=broker,
+                    daily_report=daily_report,
+                    risk_manager=risk_manager,
+                    db=db,
+                    position_sizing=config.position_sizing,
+                    pct_equity=config.pct_equity,
+                    fixed_size=config.fixed_size,
+                    risk_pct=config.risk_pct,
+                    long_only=strat_config.long_only,
+                )
+
+                await engine.reconcile()
+                engines[ticker] = engine
+
+                daily_report.log_status(
+                    f"Multi-TF strategy loaded: {slots[0].strategy.name} "
+                    f"on {ticker} ({', '.join(timeframes)})"
+                )
+
+            else:
+                # Single timeframe mode (legacy)
+                tf = timeframes[0]
+                logger.info(f"--- Setting up {ticker} ({tf}) ---")
+
+                strategy = load_strategy(strat_config.file, strat_config.params)
+                df = await warmup_strategy(strategy, broker, ticker, tf)
+
+                if df.empty:
+                    logger.warning(f"Skipping {ticker} — no historical data")
+                    daily_report.log_error(f"{ticker}: No historical data for warmup")
+                    continue
+
+                engine = LiveEngine(
+                    ticker=ticker,
+                    strategy=strategy,
+                    broker=broker,
+                    daily_report=daily_report,
+                    initial_df=df,
+                    risk_manager=risk_manager,
+                    db=db,
+                    position_sizing=config.position_sizing,
+                    pct_equity=config.pct_equity,
+                    fixed_size=config.fixed_size,
+                    risk_pct=config.risk_pct,
+                    long_only=strat_config.long_only,
+                )
+
+                await engine.reconcile()
+                engines[ticker] = engine
+                daily_report.log_status(
+                    f"Strategy loaded: {strategy.name} on {ticker} ({tf})"
+                )
 
         if not engines:
             logger.error("No engines created. Check strategy files and data.")
@@ -169,17 +213,20 @@ async def run_bot(config: BotConfig) -> None:
         # Step 3: Set up data feed with aggregators
         await feed.connect()
 
-        # Parse timeframe minutes from config
         for ticker, strat_config in enabled.items():
             if ticker in engines:
-                tf_str = strat_config.timeframe.replace("m", "")
-                tf_minutes = int(tf_str)
-                feed.add_aggregator(ticker, tf_minutes)
+                for tf in strat_config.get_timeframes():
+                    tf_minutes = int(tf.replace("m", ""))
+                    feed.add_aggregator(ticker, tf_minutes)
 
         # Register bar callback — routes to the right engine
-        async def _on_aggregated_bar(ticker: str, bar):
+        async def _on_aggregated_bar(ticker: str, timeframe: str, bar):
             engine = engines.get(ticker)
-            if engine:
+            if engine is None:
+                return
+            if isinstance(engine, MultiTimeframeEngine):
+                await engine.on_bar(ticker, timeframe, bar)
+            elif isinstance(engine, LiveEngine):
                 await engine.on_bar(ticker, bar)
 
         feed.on_bar(_on_aggregated_bar)
@@ -211,24 +258,39 @@ async def run_bot(config: BotConfig) -> None:
         # Step 5: Run the feed (blocking) with periodic reconciliation
         feed_task = asyncio.create_task(_run_feed(feed))
         reconcile_task = asyncio.create_task(
-            _periodic_reconcile(engines, interval=300)  # Every 5 min
+            _periodic_reconcile(engines, interval=300)
         )
 
-        # Wait for shutdown signal
         await shutdown_event.wait()
 
-        # Cancel tasks
+        # --- Graceful shutdown sequence ---
+        # 1. Deactivate all engines (prevents new trades during shutdown)
+        logger.info("Deactivating engines...")
+        for ticker, engine in engines.items():
+            engine.active = False
+
+        # 2. Cancel the feed and reconcile tasks
         feed_task.cancel()
         reconcile_task.cancel()
+
+        # 3. Wait briefly for any in-flight bar processing to complete
+        await asyncio.sleep(1)
+
+        # 4. Cancel any pending orders on the broker
+        try:
+            await broker.cancel_all()
+            logger.info("Cancelled all pending orders")
+        except Exception as e:
+            logger.warning(f"Could not cancel pending orders: {e}")
 
     except Exception as e:
         logger.error(f"Bot error: {e}", exc_info=True)
         daily_report.log_error(f"Fatal error: {e}")
     finally:
-        # Shutdown: save report + persist daily stats
         logger.info("Shutting down...")
         daily_report.log_status("Bot stopped")
 
+        end_account = None
         try:
             end_account = await broker.get_account()
             end_positions = await broker.get_positions()
@@ -236,7 +298,6 @@ async def run_bot(config: BotConfig) -> None:
         except Exception:
             pass
 
-        # Save daily P&L to database
         try:
             stats = risk_manager.get_daily_stats()
             db.save_daily_pnl(
@@ -253,9 +314,10 @@ async def run_bot(config: BotConfig) -> None:
         report_path = daily_report.save()
         logger.info(f"Daily report saved: {report_path}")
 
-        db.close()
+        # Close resources in correct order: DB last (engines might still reference it)
         await feed.disconnect()
         await broker.disconnect()
+        db.close()
 
         print(f"\n  Bot stopped. Report: {report_path}\n")
 
@@ -270,8 +332,7 @@ async def _run_feed(feed: AlpacaFeed) -> None:
         logger.error(f"Feed error: {e}")
 
 
-async def _periodic_reconcile(engines: dict[str, LiveEngine],
-                               interval: int = 300) -> None:
+async def _periodic_reconcile(engines: dict, interval: int = 300) -> None:
     """Periodically reconcile positions with broker."""
     try:
         while True:
@@ -297,17 +358,20 @@ def _print_banner(mode: str, account: dict, strategies: dict) -> None:
     print(f"{'='*50}")
     print(f"\n  Strategies ({len(strategies)}):")
     for ticker, strat in strategies.items():
-        flags = f" [LONG ONLY]" if strat.long_only else ""
-        print(f"    {ticker}: {strat.file} ({strat.timeframe}){flags}")
+        tfs = strat.get_timeframes()
+        tf_str = ", ".join(tfs) if len(tfs) > 1 else tfs[0]
+        flags = ""
+        if strat.long_only:
+            flags += " [LONG ONLY]"
+        if len(tfs) > 1:
+            flags += " [MULTI-TF]"
+        print(f"    {ticker}: {strat.file} ({tf_str}){flags}")
     print()
 
 
 async def test_order(config: BotConfig, ticker: str = "AAPL",
                      qty: float = 1) -> None:
-    """Submit a test market order (paper mode only) and immediately close.
-
-    Verifies the full order flow works end-to-end.
-    """
+    """Submit a test market order (paper mode only) and immediately close."""
     if not config.paper_trading:
         logger.error("Test orders only allowed in paper mode!")
         return
@@ -340,7 +404,6 @@ async def test_order(config: BotConfig, ticker: str = "AAPL",
             f"@ ${trade.entry_price:.2f}"
         )
 
-        # Immediately close
         print(f"  Closing test position...")
         close_trade = await broker.close_position(ticker)
         if close_trade:

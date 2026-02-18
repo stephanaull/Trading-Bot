@@ -43,11 +43,13 @@ class AlpacaFeed(BaseFeed):
         self._stream: Optional[StockDataStream] = None
         self._connected = False
 
-        # Aggregators: {ticker: BarAggregator}
-        self._aggregators: dict[str, BarAggregator] = {}
+        # Aggregators: {ticker: [BarAggregator, ...]} — multiple TFs per ticker
+        self._aggregators: dict[str, list[BarAggregator]] = {}
 
-        # User callback for aggregated bars
+        # User callback for aggregated bars: callback(ticker, timeframe_str, bar)
         self._bar_callback: Optional[BarCallback] = None
+        # Legacy callback (no timeframe arg) for backward compat
+        self._bar_callback_legacy: Optional[BarCallback] = None
 
         # Subscribed tickers
         self._tickers: list[str] = []
@@ -90,22 +92,35 @@ class AlpacaFeed(BaseFeed):
     def add_aggregator(self, ticker: str, timeframe_minutes: int) -> None:
         """Add a bar aggregator for a specific ticker/timeframe.
 
+        Multiple aggregators per ticker are supported (multi-TF mode).
+
         Args:
             ticker: Symbol to aggregate
-            timeframe_minutes: Target timeframe (5, 10, etc.)
+            timeframe_minutes: Target timeframe (2, 5, 10, etc.)
         """
+        tf_str = f"{timeframe_minutes}m"
+
         async def _emit(t: str, bar: pd.Series):
             if self._bar_callback:
-                await self._bar_callback(t, bar)
+                await self._bar_callback(t, tf_str, bar)
+            elif self._bar_callback_legacy:
+                await self._bar_callback_legacy(t, bar)
 
-        self._aggregators[ticker] = BarAggregator(
+        agg = BarAggregator(
             timeframe_minutes=timeframe_minutes,
             callback=_emit,
         )
+
+        if ticker not in self._aggregators:
+            self._aggregators[ticker] = []
+        self._aggregators[ticker].append(agg)
         logger.info(f"Aggregator added: {ticker} → {timeframe_minutes}m bars")
 
-    def on_bar(self, callback: BarCallback) -> None:
-        """Register callback for aggregated bars."""
+    def on_bar(self, callback) -> None:
+        """Register callback for aggregated bars.
+
+        Callback signature for multi-TF: callback(ticker, timeframe_str, bar)
+        """
         self._bar_callback = callback
 
     async def run(self) -> None:
@@ -165,18 +180,20 @@ class AlpacaFeed(BaseFeed):
             "volume": float(bar.volume),
         }, name=ts)
 
-        # Route through aggregator if one exists
-        aggregator = self._aggregators.get(ticker)
-        if aggregator:
-            await aggregator.on_minute_bar(ticker, bar_series)
+        # Route through all aggregators for this ticker
+        aggregators = self._aggregators.get(ticker)
+        if aggregators:
+            for agg in aggregators:
+                await agg.on_minute_bar(ticker, bar_series)
         elif self._bar_callback:
             # No aggregator — pass through raw 1m bar
-            await self._bar_callback(ticker, bar_series)
+            await self._bar_callback(ticker, "1m", bar_series)
 
     async def flush_all(self) -> None:
         """Flush all aggregators (emit partial bars, e.g., at market close)."""
-        for ticker, agg in self._aggregators.items():
-            await agg.flush(ticker)
+        for ticker, aggs in self._aggregators.items():
+            for agg in aggs:
+                await agg.flush(ticker)
 
     @property
     def is_connected(self) -> bool:
