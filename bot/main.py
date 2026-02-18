@@ -1,16 +1,22 @@
 """Main entry point for the trading bot.
 
-Phase 1: Connect to Alpaca, verify account, test order flow.
-Phase 2+: Will add LiveEngine, data feeds, risk management.
+Wires together: Broker → Feed → Aggregator → Warmup → LiveEngine → Reports.
+Runs one LiveEngine per configured ticker/strategy.
 """
 
 import asyncio
 import logging
+import signal
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from bot.config.settings import BotConfig
 from bot.broker.alpaca_broker import AlpacaBroker
+from bot.feeds.alpaca_feed import AlpacaFeed
+from bot.engine.warmup import warmup_strategy, load_strategy
+from bot.engine.live_engine import LiveEngine
+from bot.notifications.daily_report import DailyReport
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +55,14 @@ def setup_logging(config: BotConfig) -> None:
 
 
 async def run_bot(config: BotConfig) -> None:
-    """Main bot loop.
+    """Main bot loop: connect, warm up, stream bars, trade.
 
-    Phase 1: Connect, print account info, verify broker works.
-    Phase 2+: Start data feeds, run LiveEngine per ticker.
+    1. Connect to Alpaca (broker + data feed)
+    2. Load strategies and warm them up with historical data
+    3. Create LiveEngines (one per ticker)
+    4. Start WebSocket bar stream
+    5. Route aggregated bars to the right LiveEngine
+    6. On shutdown: save daily report
     """
     mode = "PAPER" if config.paper_trading else "LIVE"
     logger.info(f"=== Trading Bot Starting ({mode} mode) ===")
@@ -64,6 +74,12 @@ async def run_bot(config: BotConfig) -> None:
         )
         return
 
+    # Get enabled strategies
+    enabled = {t: s for t, s in config.strategies.items() if s.enabled}
+    if not enabled:
+        logger.error("No strategies enabled. Edit bot/config/default.toml")
+        return
+
     # Initialize broker
     broker = AlpacaBroker(
         api_key=config.alpaca_api_key,
@@ -71,67 +87,195 @@ async def run_bot(config: BotConfig) -> None:
         paper=config.paper_trading,
     )
 
+    # Initialize daily report
+    daily_report = DailyReport()
+
+    # Initialize data feed
+    feed = AlpacaFeed(
+        api_key=config.alpaca_api_key,
+        secret_key=config.alpaca_secret_key,
+        feed="iex",  # Free feed; use "sip" for real-time with paid plan
+    )
+
+    engines: dict[str, LiveEngine] = {}
+    shutdown_event = asyncio.Event()
+
     try:
+        # Step 1: Connect broker
         await broker.connect()
-
-        # Print account summary
         account = await broker.get_account()
-        print(f"\n{'='*50}")
-        print(f"  Trading Bot — {mode} Mode")
-        print(f"{'='*50}")
-        print(f"  Equity:       ${account['equity']:>12,.2f}")
-        print(f"  Cash:         ${account['cash']:>12,.2f}")
-        print(f"  Buying Power: ${account['buying_power']:>12,.2f}")
-        print(f"  Status:       {account['status']}")
-        print(f"{'='*50}")
+        daily_report.set_account_start(account)
+        daily_report.log_status(f"Bot started ({mode} mode)")
 
-        # Show configured strategies
-        enabled = {
-            t: s for t, s in config.strategies.items() if s.enabled
-        }
-        if enabled:
-            print(f"\n  Configured Strategies ({len(enabled)}):")
-            for ticker, strat in enabled.items():
-                print(f"    {ticker}: {strat.file} ({strat.timeframe})")
-                if strat.params:
-                    print(f"      params: {strat.params}")
-        else:
-            print("\n  No strategies configured. Edit bot/config/default.toml")
+        _print_banner(mode, account, enabled)
 
-        # Check market status
+        # Step 2: Load strategies, warm up, create engines
+        for ticker, strat_config in enabled.items():
+            logger.info(f"--- Setting up {ticker} ---")
+
+            # Load strategy
+            strategy = load_strategy(strat_config.file, strat_config.params)
+
+            # Warm up with historical data
+            df = await warmup_strategy(
+                strategy, broker, ticker, strat_config.timeframe
+            )
+
+            if df.empty:
+                logger.warning(f"Skipping {ticker} — no historical data")
+                daily_report.log_error(f"{ticker}: No historical data for warmup")
+                continue
+
+            # Create LiveEngine
+            engine = LiveEngine(
+                ticker=ticker,
+                strategy=strategy,
+                broker=broker,
+                daily_report=daily_report,
+                initial_df=df,
+                position_sizing=config.position_sizing,
+                pct_equity=config.pct_equity,
+                fixed_size=config.fixed_size,
+                risk_pct=config.risk_pct,
+            )
+
+            # Reconcile — check if broker has existing positions
+            await engine.reconcile()
+
+            engines[ticker] = engine
+            daily_report.log_status(
+                f"Strategy loaded: {strategy.name} on {ticker} ({strat_config.timeframe})"
+            )
+
+        if not engines:
+            logger.error("No engines created. Check strategy files and data.")
+            return
+
+        # Step 3: Set up data feed with aggregators
+        await feed.connect()
+
+        # Parse timeframe minutes from config
+        for ticker, strat_config in enabled.items():
+            if ticker in engines:
+                tf_str = strat_config.timeframe.replace("m", "")
+                tf_minutes = int(tf_str)
+                feed.add_aggregator(ticker, tf_minutes)
+
+        # Register bar callback — routes to the right engine
+        async def _on_aggregated_bar(ticker: str, bar):
+            engine = engines.get(ticker)
+            if engine:
+                await engine.on_bar(ticker, bar)
+
+        feed.on_bar(_on_aggregated_bar)
+
+        # Subscribe to all tickers
+        tickers = list(engines.keys())
+        await feed.subscribe(tickers)
+
+        # Step 4: Check market status
         market_open = await broker.is_market_open()
-        print(f"\n  Market: {'OPEN' if market_open else 'CLOSED'}")
-
-        # Show open positions
-        positions = await broker.get_positions()
-        if positions:
-            print(f"\n  Open Positions ({len(positions)}):")
-            for p in positions:
-                pnl_sign = "+" if p["unrealized_pnl"] >= 0 else ""
-                print(
-                    f"    {p['ticker']}: {p['side']} {p['qty']:.0f} "
-                    f"@ ${p['avg_price']:.2f} "
-                    f"(P&L: {pnl_sign}${p['unrealized_pnl']:.2f})"
-                )
+        if not market_open:
+            logger.info("Market is CLOSED. Bot will stream bars when market opens.")
+            daily_report.log_status("Market is closed. Waiting for open.")
         else:
-            print("\n  No open positions.")
+            logger.info("Market is OPEN. Streaming live bars...")
 
-        print(f"\n{'='*50}")
-        print("  Phase 1 complete. Broker connection verified.")
-        print("  Phase 2 (LiveEngine + data feeds) coming next.")
-        print(f"{'='*50}\n")
+        # Handle graceful shutdown
+        def _signal_handler():
+            logger.info("Shutdown signal received...")
+            shutdown_event.set()
+
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler)
+
+        print(f"\n  Bot running. Streaming bars for: {', '.join(tickers)}")
+        print(f"  Press Ctrl+C to stop.\n")
+
+        # Step 5: Run the feed (blocking) with periodic reconciliation
+        feed_task = asyncio.create_task(_run_feed(feed))
+        reconcile_task = asyncio.create_task(
+            _periodic_reconcile(engines, interval=300)  # Every 5 min
+        )
+
+        # Wait for shutdown signal
+        await shutdown_event.wait()
+
+        # Cancel tasks
+        feed_task.cancel()
+        reconcile_task.cancel()
 
     except Exception as e:
         logger.error(f"Bot error: {e}", exc_info=True)
+        daily_report.log_error(f"Fatal error: {e}")
     finally:
+        # Shutdown: save report
+        logger.info("Shutting down...")
+        daily_report.log_status("Bot stopped")
+
+        try:
+            end_account = await broker.get_account()
+            end_positions = await broker.get_positions()
+            daily_report.set_account_end(end_account, end_positions)
+        except Exception:
+            pass
+
+        report_path = daily_report.save()
+        logger.info(f"Daily report saved: {report_path}")
+
+        await feed.disconnect()
         await broker.disconnect()
+
+        print(f"\n  Bot stopped. Report: {report_path}\n")
+
+
+async def _run_feed(feed: AlpacaFeed) -> None:
+    """Run the feed in a task (catches cancellation)."""
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, feed._stream.run)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"Feed error: {e}")
+
+
+async def _periodic_reconcile(engines: dict[str, LiveEngine],
+                               interval: int = 300) -> None:
+    """Periodically reconcile positions with broker."""
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            for ticker, engine in engines.items():
+                try:
+                    await engine.reconcile()
+                except Exception as e:
+                    logger.error(f"Reconciliation error for {ticker}: {e}")
+    except asyncio.CancelledError:
+        pass
+
+
+def _print_banner(mode: str, account: dict, strategies: dict) -> None:
+    """Print startup banner."""
+    print(f"\n{'='*50}")
+    print(f"  Trading Bot — {mode} Mode")
+    print(f"{'='*50}")
+    print(f"  Equity:       ${account['equity']:>12,.2f}")
+    print(f"  Cash:         ${account['cash']:>12,.2f}")
+    print(f"  Buying Power: ${account['buying_power']:>12,.2f}")
+    print(f"  Status:       {account['status']}")
+    print(f"{'='*50}")
+    print(f"\n  Strategies ({len(strategies)}):")
+    for ticker, strat in strategies.items():
+        print(f"    {ticker}: {strat.file} ({strat.timeframe})")
+    print()
 
 
 async def test_order(config: BotConfig, ticker: str = "AAPL",
                      qty: float = 1) -> None:
-    """Submit a test market order (paper mode only) and immediately cancel/close.
+    """Submit a test market order (paper mode only) and immediately close.
 
-    This verifies the full order flow works end-to-end.
+    Verifies the full order flow works end-to-end.
     """
     if not config.paper_trading:
         logger.error("Test orders only allowed in paper mode!")
